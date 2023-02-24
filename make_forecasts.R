@@ -11,6 +11,7 @@ library(data.table)
 library(arrow)
 library(rjson)
 library(ggplot2)
+library(ggpubr)
 library(forecast)
 library(crch)
 library(lmtest)
@@ -87,6 +88,35 @@ for (timestamp in timestamps[411:length(timestamps)]){
 energy_data <- setDT(energy_data)[,lapply(.SD, sum), by=floor_date(date_time,"hour")] %>%
   na.omit() %>%
   mutate(gesamt = gesamt/1000)
+
+energy_data <- energy_data %>%
+  mutate(gesamt_diff = gesamt - lag(gesamt))
+
+energy_raw_years_plot <- ggplot(energy_data, aes(x=floor_date, y=gesamt)) +
+  geom_line() +
+  scale_x_datetime() +
+  coord_cartesian(xlim = c(as_datetime("2019-02-15"), as_datetime("2023-02-15")),
+                  ylim = c(32, 82), expand=F) +
+  labs(x = NULL, y = "energy demand [GWh]")
+energy_raw_weeks_plot <- ggplot(energy_data, aes(x=floor_date, y=gesamt)) +
+  geom_line() +
+  scale_x_datetime() +
+  coord_cartesian(xlim = c(as_datetime("2023-01-18"), as_datetime("2023-02-15")),
+                  ylim = c(39, 77), expand=F) +
+  labs(x = NULL, y = "energy demand [GWh]")
+energy_raw_plot <- ggarrange(energy_raw_years_plot, energy_raw_weeks_plot,
+                             ncol=1, nrow=2, labels = list("A", "B"))
+print(energy_raw_plot)
+ggsave(energy_raw_plot, filename = "otherFiles/plot_energy_raw.png",  bg = "transparent",
+       width = 8.8, height = 4.5)
+
+energy_diff_plot <- ggplot(energy_data, aes(x=floor_date, y=gesamt_diff)) +
+  geom_line() +
+  scale_x_datetime() +
+  coord_cartesian(xlim = c(as_datetime("2022-02-15"), as_datetime("2023-02-15")),
+                  ylim = c(-5, 9), expand=F) +
+  labs(x = NULL, y = "changes in energy demand [GWh]")
+print(energy_diff_plot)
 
 horizons <- c(36, 40, 44, 60, 64, 68)
 get_date_from_horizon <- function(last_ts, horizon){
