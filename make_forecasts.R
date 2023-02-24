@@ -54,7 +54,6 @@ if(!file.exists(energy_file_path)){
   }
   
   energy_data <- energy_data %>%
-    # filter(date_time < as_datetime(timestamps[411]/1000)) %>%
     na.omit()
   
   View(energy_data)
@@ -94,23 +93,6 @@ get_date_from_horizon <- function(last_ts, horizon){
   return(last_ts + hours(horizon))
 }
 
-# Make submission file with basic forecast: quantiles over complete time series
-# (rows are horizons, cols are quantile levels)
-# pred_energy_raw <- data.frame(forecast_date = forecast_date, 
-#                           target = "energy", horizon = paste(horizons, "hour"),
-#                           q0.025 = NA, q0.25 = NA, q0.5 = NA, q0.75 = NA, 
-#                           q0.975 = NA)
-# for(i in 1:dim(pred_energy_raw)[1]){
-#   pred_energy_raw[i, 4:8] <- quantile(energy_data$gesamt, quantile_levels)
-# }
-
-# par(mfrow=c(2,2))
-# energy_data$gesamt %>% acf(lag=48, main="acf raw")
-# energy_data$gesamt %>% pacf(lag=48, main="pacf raw")
-# energy_data$gesamt %>% diff(lag=24) %>% acf(lag=48, main="acf diff 24")
-# energy_data$gesamt %>% diff(lag=24) %>% pacf(lag=48, main="pacf diff 24")
-# par(mfrow=c(1,1))
-
 par(mfrow=c(2,1))
 energy_data$gesamt %>% acf(lag=24*7+1, main="acf raw")
 energy_data$gesamt %>% pacf(lag=24*7+1, main="pacf raw")
@@ -118,7 +100,7 @@ energy_data$gesamt %>% diff(lag=24) %>% acf(lag=24*7+1, main="acf diff 24")
 energy_data$gesamt %>% diff(lag=24) %>% pacf(lag=24*7+1, main="pacf diff 24")
 par(mfrow=c(1,1))
 
-holidays <- read.csv("https://www.spiketime.de/feiertagapi/feiertage/csv/2014/2022", sep=";") %>%
+holidays <- read.csv("https://www.spiketime.de/feiertagapi/feiertage/csv/2014/2023", sep=";") %>%
   transmute(date = as_date(Datum)) %>%
   unique()
 
@@ -219,12 +201,6 @@ x_reg <- as.data.frame(cbind(energy_data[,c("floor_date", "day_type")])) %>%#,
 
 x_reg_names <- c("day_type", "temp_mean")
 
-# plot(energy_data[date(energy_data$floor_date)==17532]$gesamt,
-#      type="l", ylim=c(40,80), ylab="gesamt", xlab="hour")
-# for (d in unique(date(energy_data$floor_date))[1:100]){
-#   lines(1:24, energy_data[date(energy_data$floor_date)==d]$gesamt)
-# }
-
 model_input <- energy_data %>%
   full_join(x_reg, by=c("floor_date", "day_type")) %>%
   dplyr::filter(hour(floor_date) %in% c(11,15,19))
@@ -277,8 +253,8 @@ coeftest(energy_model_sarimax_minAIC)
 resid_sarimax <- energy_model_sarimax_minAIC %>% residuals()
 
 par(mfrow=c(2,1))
-resid_sarimax %>% acf(lag=3*7+1, main="acf residuals sarima")
-resid_sarimax %>% pacf(lag=3*7+1, main="pacf residuals sarima")
+resid_sarimax %>% na.omit() %>% acf(lag=3*7+1, main="acf residuals sarima")
+resid_sarimax %>% na.omit() %>% pacf(lag=3*7+1, main="pacf residuals sarima")
 par(mfrow=c(1,1))
 
 plot(model_input$floor_date,
@@ -293,20 +269,21 @@ is_holiday_pred <- ifelse(as_date(date_time) %in% holidays$date, 1, 0)
 is_holiday_weekend_pred <- is_weekend_pred*is_holiday_pred
 season_sin_pred <- sin(2*pi/(365*24) * get_hour_of_year(date_time))
 season_cos_pred <- cos(2*pi/(365*24) * get_hour_of_year(date_time))
-day_type_pred <- rep(0, length(date_time))
+day_type_pred <- data.frame(date_time, rep(0, length(date_time)))
+colnames(day_type_pred) <- c("floor_date", "day_type")
 for (row in 1:length(date_time)){
-  day_type_pred[row] <- avg_data[(hour(date_time[row])+1),
-                                 paste0("avg_",
-                                        is_weekend_pred[row],
-                                        is_holiday_pred[row])]
+  day_type_pred[row, "day_type"] <- avg_data[(hour(date_time[row])+1),
+                                             paste0("avg_",
+                                                    is_weekend_pred[row],
+                                                    is_holiday_pred[row])]
 }
 temp_mean_pred <- temperature_long %>% dplyr::filter(floor_date %in% date_time) %>%
   mutate(floor_date = with_tz(floor_date, "UTC"))
-new_x_reg <- cbind(day_type_pred, temp_mean_pred)
+new_x_reg <- day_type_pred %>% full_join(temp_mean_pred, by="floor_date")
                    #is_weekend_pred, is_holiday_pred, is_holiday_weekend_pred,
                    #season_sin_pred, season_cos_pred)
-model_input_future <- data.frame(new_x_reg) %>%
-  rename(day_type = day_type_pred) %>%#, season_sin = season_sin_pred) %>%
+model_input_future <- new_x_reg %>%
+  # rename(day_type = day_type_pred, season_sin = season_sin_pred) %>%
   dplyr::filter(hour(floor_date) %in% c(11,15,19))
 pred <- predict(energy_model_sarimax_minAIC, n.ahead = 13,
                 newxreg = model_input_future %>% select(all_of(x_reg_names)))
@@ -319,15 +296,6 @@ pred_sarima <- data.frame(model_input_future$floor_date, pred$pred, pred$se) %>%
 
 energy_plot <- ggplot() +
   geom_line(data = model_input, aes(x=floor_date, y=gesamt)) +
-  # geom_line(data = pred_energy_raw,
-  #           aes(x=max(energy_data$floor_date)+hours(substr(horizon,1,2)),
-  #               y=q0.5)) +
-  # geom_ribbon(data = pred_energy_raw,
-  #             aes(x=max(energy_data$floor_date)+hours(substr(horizon,1,2)),
-  #                 ymin=q0.25, ymax=q0.75), alpha=.3) +
-  # geom_ribbon(data = pred_energy_raw,
-  #             aes(x=max(energy_data$floor_date)+hours(substr(horizon,1,2)),
-  #                 ymin=q0.025, ymax=q0.975), alpha=.15) +
   scale_x_datetime() +
   coord_cartesian(xlim = c(now() - weeks(6), now() + hours(100))) +
   labs(x = NULL, y = "Gesamtverbrauch [GWh]")
