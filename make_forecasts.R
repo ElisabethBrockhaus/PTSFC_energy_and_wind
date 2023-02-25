@@ -91,8 +91,13 @@ for (timestamp in timestamps[411:length(timestamps)]){
 # aggregate hourly and convert from MWh to GWh
 energy_data <- setDT(energy_data)[,lapply(.SD, sum), by=floor_date(date_time,"hour")] %>%
   na.omit() %>%
-  dplyr::filter(floor_date <= as_datetime(forecast_date)) %>%
   mutate(gesamt = gesamt/1000)
+
+energy_data_future <- energy_data %>%
+  dplyr::filter(floor_date > as_datetime(forecast_date))
+
+energy_data <- energy_data %>%
+  dplyr::filter(floor_date <= as_datetime(forecast_date))
 
 # add time series differenced once
 energy_data <- energy_data %>%
@@ -433,6 +438,26 @@ energy_plot <- energy_plot +
               aes(x=forecast_datetimes, ymin=q0.025, ymax=q0.975), alpha=.15, fill="blue")
 print(energy_plot)
 
+
+### model evaluation ###
+
+quantile_score <- function(y_true, q_forecast, tau){
+  indicator <- ifelse(y_true < q_forecast, 1, 0)
+  score <- 2 * (y_true - q_forecast) * (tau - indicator)
+  return(score)
+}
+quantile_levels <- c(0.025,0.25,0.5,0.75,0.975)
+
+qs_sum_sarimax <- qs_sum_baseline <- 0
+for (tau in quantile_levels){
+  y_true <- energy_data_future[energy_data_future$floor_date == forecast_datetimes[1],]$gesamt
+  q_fc_sarimax <- pred_sarima[pred_sarima$date_time == forecast_datetimes[1], paste0("q", tau)]
+  q_fc_baseline <- pred_baseline[pred_baseline$forecast_datetimes == forecast_datetimes[1], paste0("q", tau)]
+  qs_sum_sarimax <- qs_sum_sarimax + quantile_score(y_true, q_fc_sarimax, tau)
+  qs_sum_baseline <- qs_sum_baseline + quantile_score(y_true, q_fc_baseline, tau)
+}
+qs_sum_sarimax
+qs_sum_baseline
 
 
 ###########
