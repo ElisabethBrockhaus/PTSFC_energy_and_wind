@@ -305,6 +305,9 @@ par_minBIC <- grid[which.min(grid$BIC),]
 print(par_minAIC)
 print(par_minBIC)
 
+
+### final model ###
+
 # fit model
 energy_model_sarimax_minAIC <- model_input$gesamt %>%
   Arima(order=c(par_minAIC$p,par_minAIC$d,par_minAIC$q),
@@ -333,6 +336,9 @@ plot_model_fit <- ggplot() +
   theme(legend.position="bottom") +
   xlab(element_blank()) + ylab("energy demand [GWh]")
 print(plot_model_fit)
+
+
+### predictions ###
 
 # construct regressors for forecast period
 date_time <- seq(as_datetime(forecast_date), length.out=100, by="hour")
@@ -394,6 +400,38 @@ for (q in c("q0.025", "q0.25", "q0.5", "q0.75", "q0.975")){
   pred_energy_sarima[,q] <- pred_sarima[pred_sarima$date_time %in% forecast_datetimes,q]
 }
 View(pred_energy_sarima)
+
+
+### baseline model ###
+
+pred_energy_baseline <- energy_data %>%
+  dplyr::select(floor_date, gesamt) %>%
+  mutate(weekday = weekdays(floor_date), hour = hour(floor_date)) %>%
+  group_by(weekday, hour) %>%
+  summarise(q0.025 = quantile(gesamt, 0.025),
+            q0.25 = quantile(gesamt, 0.25),
+            q0.5 = quantile(gesamt, 0.5),
+            q0.75 = quantile(gesamt, 0.75),
+            q0.975 = quantile(gesamt, 0.975)) %>%
+  dplyr::filter((weekday %in% weekdays(forecast_datetimes)) &
+                  (hour %in% hour(forecast_datetimes))) %>%
+  ungroup() %>%
+  mutate(forecast_date = !!forecast_date,
+         target = "energy",
+         horizon = paste(horizons, "hour")) %>%
+  dplyr::select(!c("weekday", "hour")) %>%
+  relocate(c(forecast_date, target, horizon))
+View(pred_energy_baseline)
+
+pred_baseline <- data.frame(forecast_datetimes, pred_energy_baseline %>% select(starts_with("q")))
+
+energy_plot <- energy_plot +
+  geom_line(data=pred_baseline, aes(x=forecast_datetimes, y=q0.5), color="blue") +
+  geom_ribbon(data = pred_baseline,
+              aes(x=forecast_datetimes, ymin=q0.25, ymax=q0.75), alpha=.3, fill="blue") +
+  geom_ribbon(data = pred_baseline,
+              aes(x=forecast_datetimes, ymin=q0.025, ymax=q0.975), alpha=.15, fill="blue")
+print(energy_plot)
 
 
 
