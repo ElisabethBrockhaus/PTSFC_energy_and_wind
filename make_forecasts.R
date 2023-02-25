@@ -221,9 +221,7 @@ View(temperature_long)
 #             temp_hist=as.numeric(TT_TU)) %>%
 #   mutate(floor_date = with_tz(floor_date, "UTC"))
 
-x_reg <- as.data.frame(cbind(energy_data[,c("floor_date", "day_type")])) %>%#,
-                             #energy_data[,c("is_weekend", "is_holiday", "is_holiday_weekend")],
-                             #season_sin)) #, season_cos)) 
+x_reg <- as.data.frame(cbind(energy_data[,c("floor_date", "day_type")])) %>%
   full_join(temperature_long, by="floor_date") #%>%
   # full_join(temperature_historic, by="floor_date") %>%
   # mutate(temp_mean = coalesce(temp_mean, temp_hist)) %>% # where ever no forecast is available use true value instead
@@ -310,10 +308,7 @@ for (row in 1:length(date_time)){
 temp_mean_pred <- temperature_long %>% dplyr::filter(floor_date %in% date_time) %>%
   mutate(floor_date = with_tz(floor_date, "UTC"))
 new_x_reg <- day_type_pred %>% full_join(temp_mean_pred, by="floor_date")
-                   #is_weekend_pred, is_holiday_pred, is_holiday_weekend_pred,
-                   #season_sin_pred, season_cos_pred)
 model_input_future <- new_x_reg %>%
-  # rename(day_type = day_type_pred, season_sin = season_sin_pred) %>%
   dplyr::filter(hour(floor_date) %in% c(11,15,19))
 pred <- predict(energy_model_sarimax_minAIC, n.ahead = 13,
                 newxreg = model_input_future %>% select(all_of(x_reg_names)))
