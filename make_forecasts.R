@@ -20,13 +20,16 @@ getwd()
 
 options("scipen"=100, "digits"=4)
 
-forecast_date <- as.character(today())
-quantile_levels <- c(0.025,0.25,0.5,0.75,0.975)
+#forecast_date <- as.character(today())
+forecast_date <- "2023-02-15"
 
 
 ################
 # Power demand #
 ################
+
+### read data ###
+
 timestamps <- fromJSON(file="https://www.smard.de/app/chart_data/410/DE/index_quarterhour.json")[[1]]
 
 # get history
@@ -65,7 +68,7 @@ if(!file.exists(energy_file_path)){
   energy_data <- read_csv(energy_file_path)
 } 
 
-# add recent data
+# add data after November 6, 2022
 for (timestamp in timestamps[411:length(timestamps)]){
   print(as_datetime(timestamp/1000))
   data_source <- paste0("https://www.smard.de/app/chart_data/410/DE/410_DE_quarterhour_", timestamp, ".json")
@@ -85,13 +88,20 @@ for (timestamp in timestamps[411:length(timestamps)]){
   energy_data <- rbind(energy_data, energy_data_short)
 }
 
+# aggregate hourly and convert from MWh to GWh
 energy_data <- setDT(energy_data)[,lapply(.SD, sum), by=floor_date(date_time,"hour")] %>%
   na.omit() %>%
+  dplyr::filter(floor_date <= as_datetime(forecast_date)) %>%
   mutate(gesamt = gesamt/1000)
 
+# add time series differenced once
 energy_data <- energy_data %>%
   mutate(gesamt_diff = gesamt - lag(gesamt))
 
+
+### some plots of raw data ###
+
+# plot energy time series for different time frames
 energy_raw_years_plot <- ggplot(energy_data, aes(x=floor_date, y=gesamt)) +
   geom_line() +
   scale_x_datetime() +
@@ -110,6 +120,7 @@ print(energy_raw_plot)
 ggsave(energy_raw_plot, filename = "otherFiles/plot_energy_raw.png",  bg = "transparent",
        width = 8.8, height = 4.5)
 
+# plot differenced version of time series
 energy_diff_plot <- ggplot(energy_data, aes(x=floor_date, y=gesamt_diff)) +
   geom_line() +
   scale_x_datetime() +
@@ -118,11 +129,7 @@ energy_diff_plot <- ggplot(energy_data, aes(x=floor_date, y=gesamt_diff)) +
   labs(x = NULL, y = "changes in energy demand [GWh]")
 print(energy_diff_plot)
 
-horizons <- c(36, 40, 44, 60, 64, 68)
-get_date_from_horizon <- function(last_ts, horizon){
-  return(last_ts + hours(horizon))
-}
-
+# look at (partial) autocorrelation
 par(mfrow=c(2,1))
 energy_data$gesamt %>% acf(lag=24*7+1, main="acf raw")
 energy_data$gesamt %>% pacf(lag=24*7+1, main="pacf raw")
@@ -130,15 +137,21 @@ energy_data$gesamt %>% diff(lag=24) %>% acf(lag=24*7+1, main="acf diff 24")
 energy_data$gesamt %>% diff(lag=24) %>% pacf(lag=24*7+1, main="pacf diff 24")
 par(mfrow=c(1,1))
 
+
+### holiday/weekend regressor ###
+
+# read holidays from API
 holidays <- read.csv("https://www.spiketime.de/feiertagapi/feiertage/csv/2014/2023", sep=";") %>%
   transmute(date = as_date(Datum)) %>%
   unique()
 
+# create dummies for weekends/holidays/both
 energy_data <- energy_data %>%
   mutate(is_weekend = ifelse(weekdays(floor_date) %in% c("Samstag", "Sonntag"), 1, 0),
          is_holiday = ifelse(as_date(floor_date) %in% holidays$date, 1, 0),
          is_holiday_weekend = is_weekend*is_holiday)
 
+# compare mean energy demand between the four categories
 # non-holiday weekday
 mean(energy_data[energy_data$is_weekend+energy_data$is_holiday==0]$gesamt)
 # holiday weekday
@@ -148,11 +161,13 @@ mean(energy_data[(energy_data$is_weekend==1)&(energy_data$is_holiday==0)]$gesamt
 # holiday weekend
 mean(energy_data[energy_data$is_holiday_weekend==1]$gesamt)
 
+# split data into historic part used for target encoding and model input
 energy_data_historic <- energy_data %>%
   filter(floor_date<as_date("2021-09-08")) # used to create alternative regressor to weekend/holiday dummies
 energy_data <- energy_data %>%
   filter(floor_date>=as_date("2021-09-08"))
 
+# four each hour of the day calculate mean per category
 avg_00 <- avg_01 <- avg_10 <- avg_11 <- rep(NA,24)
 for (h in 0:23){
   dat <- energy_data_historic[hour(energy_data_historic$floor_date)==h]
@@ -165,14 +180,24 @@ for (h in 0:23){
   # average holiday weekend
   avg_11[h+1] <- mean(dat[dat$is_weekend+dat$is_holiday==2]$gesamt, na.rm = T)
 }
-plot(avg_00, type="l", ylim=c(39,72))
-lines(avg_01, col="blue")
-lines(avg_10, col="darkgreen")
-lines(avg_11, col="orange")
-legend("topright", c("normal wd", "holiday wd", "normal we", "holiday we"),
-       lty=1, col=c("black", "blue", "darkgreen", "orange"))
 avg_data <- cbind(avg_00, avg_01, avg_10, avg_11)
+avg_data_long <- data.frame(avg_data) %>%
+  rowid_to_column() %>%
+  rename(hour = rowid,
+         "normal weekday" = avg_00, "holiday weekday" = avg_01,
+         "normal weekend" = avg_10, "holiday weekend" = avg_11) %>%
+  pivot_longer(cols=!c("hour"), names_to = "day_type", values_to = "value")
+# plot day type variable
+day_types_plot <- ggplot() +
+  geom_line(data=avg_data_long, aes(x=hour, y=value, color=day_type)) +
+  scale_color_brewer(palette = "Set1") +
+  labs(color='day type') +
+  coord_cartesian(ylim=c(38,71), expand=F)
+print(day_types_plot)
+ggsave(day_types_plot, filename = "otherFiles/plot_day_type.png",  bg = "transparent",
+       width = 6, height = 3)
 
+# add day_type variable to the training data depending on weekend and holiday dummy
 energy_data$day_type <- 0
 for (row in 1:dim(energy_data)[1]){
   energy_data[row, "day_type"] <- avg_data[(hour(energy_data[row,]$floor_date)+1),
@@ -181,15 +206,27 @@ for (row in 1:dim(energy_data)[1]){
                                                   energy_data[row,]$is_holiday)]
 }
 
+# construct variable to account for yearly periodicity
 get_hour_of_year <- function(time) {
   (as.integer(format(time, '%j')) - 1) * 24 + as.integer(format(time, '%H'))
 }
 season_sin <- sin(2*pi/(365*24) * get_hour_of_year(energy_data$floor_date))
 season_cos <- cos(2*pi/(365*24) * get_hour_of_year(energy_data$floor_date))
 
-d <- as_date("2021-09-08")  # 1st wednesday data set
+# compare course of seasonality variables to behavior of energy demand 
+plot(energy_data$floor_date, energy_data$gesamt, type="l", xlab="date", ylab="energy demand")
+lines(energy_data$floor_date, 12*season_sin+55, col="blue")
+lines(energy_data$floor_date, 12*season_cos+55, col="red")
+legend("topright", legend=c("energy demand", "12*season_sin+55", "12*season_cos+55"), lty=1, col=c("black", "blue", "red"))
+
+
+### temperature regressor ###
+
+# get all Wednesdays for which ensemble forecast is available
+d <- as_date("2021-09-08")  # 1st Wednesday data set
 wednesdays <- gsub("-", "", seq(d, today(), by="week"))
 
+# read forecasts issued on wednesdays and calculate ensemble mean
 temperature <- data.frame(fcst_hour=0:120)
 for (w in wednesdays){
   try({file <- paste0("../kit-weather-ensemble-point-forecast-karlsruhe/icon-eu-eps_", w, "00_t_2m_Karlsruhe.txt")
@@ -204,6 +241,7 @@ for (w in wednesdays){
 }
 View(temperature)
 
+# format the temperature such that it can be merged with the energy data
 temperature_long <- temperature %>%
   pivot_longer(cols = starts_with("202"), names_to = "date", values_to = "temp_mean") %>%
   mutate(date = as_datetime(date, format = "%Y%m%d", tz="CET")) %>%
@@ -213,28 +251,21 @@ temperature_long <- temperature %>%
   full_join(energy_data %>% dplyr::select(floor_date), by="floor_date") %>%
   arrange(floor_date) %>%
   dplyr::filter(!is.na(floor_date)) %>%
-  mutate(temp_mean = na.approx(temp_mean))
+  mutate(temp_mean = na.approx(temp_mean)) # linearly interpolate missing values
 View(temperature_long)
 
-# temperature_historic <- read_delim("data/energy/temperature/produkt_tu_stunde_20210814_20230214_04177.txt") %>%
-#   transmute(floor_date = as_datetime(as.character(MESS_DATUM), format="%Y%m%d%H", tz="CET"),
-#             temp_hist=as.numeric(TT_TU)) %>%
-#   mutate(floor_date = with_tz(floor_date, "UTC"))
-
-x_reg <- as.data.frame(cbind(energy_data[,c("floor_date", "day_type")])) %>%
-  full_join(temperature_long, by="floor_date") #%>%
-  # full_join(temperature_historic, by="floor_date") %>%
-  # mutate(temp_mean = coalesce(temp_mean, temp_hist)) %>% # where ever no forecast is available use true value instead
-  # dplyr::select(!temp_hist)
-
+# combine model input and filter for hours of interest
+model_input <- energy_data[,c("floor_date", "gesamt", "day_type")] %>%
+  left_join(temperature_long, by="floor_date") %>%
+  dplyr::filter(hour(floor_date) %in% c(11,15,19))
 x_reg_names <- c("day_type", "temp_mean")
 
-model_input <- energy_data %>%
-  full_join(x_reg, by=c("floor_date", "day_type")) %>%
-  dplyr::filter(hour(floor_date) %in% c(11,15,19))
 
+### hyperparameter tuning ###
 
-# find best order
+# grid search over SARIMA orders
+
+# construct data frame with parameter combinations that should be compared
 # grid <- data.frame(p=NA, d=NA, q=NA, P=NA, Q=NA, m=NA, AIC=NA, BIC=NA)
 # for(p in 1:4){
 #   for(d in 0:1){
@@ -252,6 +283,7 @@ model_input <- energy_data %>%
 # grid <- grid[2:dim(grid)[1],]
 # rownames(grid) <-1:dim(grid)[1]
 # 
+# fit model for each parameter combination and save the corresponding AIC/BIC values
 # for(row in 1:dim(grid)[1]){
 #   try(
 #     {model <- model_input$gesamt %>%
@@ -265,33 +297,45 @@ model_input <- energy_data %>%
 #   })
 # }
 # write_csv(grid, "otherFiles/energy_order_grid_AIC_BIC.csv")
-grid <- read_csv("otherFiles/energy_order_grid_AIC_BIC.csv")
 
+# read results of grid search and choose model which minimizes AIC
+grid <- read_csv("otherFiles/energy_order_grid_AIC_BIC.csv")
 par_minAIC <- grid[which.min(grid$AIC),]
 par_minBIC <- grid[which.min(grid$BIC),]
 print(par_minAIC)
+print(par_minBIC)
 
+# fit model
 energy_model_sarimax_minAIC <- model_input$gesamt %>%
   Arima(order=c(par_minAIC$p,par_minAIC$d,par_minAIC$q),
         seasonal=list(order=c(par_minAIC$P,0,par_minAIC$Q),
                       period=par_minAIC$m),
         xreg = as.matrix(model_input %>% select(all_of(x_reg_names))))
-summary(energy_model_sarimax_minAIC)
+# look at estimated coefficients and corresponding p-values
 coeftest(energy_model_sarimax_minAIC)
+
+# get residuals and look for remaining autocorrelation
 resid_sarimax <- energy_model_sarimax_minAIC %>% residuals()
 
 par(mfrow=c(2,1))
-resid_sarimax %>% na.omit() %>% acf(lag=3*7+1, main="acf residuals sarima")
-resid_sarimax %>% na.omit() %>% pacf(lag=3*7+1, main="pacf residuals sarima")
+resid_sarimax %>% na.omit() %>% acf(lag=3*7+1, main="")
+resid_sarimax %>% na.omit() %>% pacf(lag=3*7+1, main="")
 par(mfrow=c(1,1))
 
-plot(model_input$floor_date,
-     energy_model_sarimax_minAIC$x, col='red', type="l",
-     xlim=c(energy_data$floor_date[dim(model_input)[1]-1000],energy_data$floor_date[dim(model_input)[1]]))
-lines(model_input$floor_date,
-      fitted(energy_model_sarimax_minAIC), col='blue')
+# plot in-sample fit
+data_fitted <- data.frame(datetime=model_input$floor_date, true=energy_model_sarimax_minAIC$x, fitted=fitted(energy_model_sarimax_minAIC)) %>%
+  pivot_longer(cols=c("true", "fitted"), names_to = "type")
+plot_model_fit <- ggplot() +
+  geom_line(data = data_fitted, aes(x=datetime, y=value, color=type)) +
+  scale_color_brewer(palette = "Set1") +
+  coord_cartesian(xlim=c(as_datetime("2022-12-01"), as_datetime("2023-02-15")),
+                  ylim=c(43,76), expand=F) +
+  theme(legend.position="bottom") +
+  xlab(element_blank()) + ylab("energy demand [GWh]")
+print(plot_model_fit)
 
-date_time <- seq(max(energy_data$floor_date)+hours(1), length.out=100, by="hour")
+# construct regressors for forecast period
+date_time <- seq(as_datetime(forecast_date), length.out=100, by="hour")
 is_weekend_pred <- ifelse(weekdays(date_time) %in% c("Samstag", "Sonntag"), 1, 0)
 is_holiday_pred <- ifelse(as_date(date_time) %in% holidays$date, 1, 0)
 is_holiday_weekend_pred <- is_weekend_pred*is_holiday_pred
@@ -310,7 +354,9 @@ temp_mean_pred <- temperature_long %>% dplyr::filter(floor_date %in% date_time) 
 new_x_reg <- day_type_pred %>% full_join(temp_mean_pred, by="floor_date")
 model_input_future <- new_x_reg %>%
   dplyr::filter(hour(floor_date) %in% c(11,15,19))
-pred <- predict(energy_model_sarimax_minAIC, n.ahead = 13,
+
+# predict the energy demand using the fitted SARIMAX model
+pred <- predict(energy_model_sarimax_minAIC, n.ahead = dim(model_input_future)[1],
                 newxreg = model_input_future %>% select(all_of(x_reg_names)))
 pred_sarima <- data.frame(model_input_future$floor_date, pred$pred, pred$se) %>%
   rename(date_time = model_input_future.floor_date, q0.5 = pred.pred, se = pred.se) %>%
@@ -319,11 +365,13 @@ pred_sarima <- data.frame(model_input_future$floor_date, pred$pred, pred$se) %>%
          q0.75 = q0.5 + se * qnorm(0.75),
          q0.975 = q0.5 + se * qnorm(0.975))
 
+# plot recent history and forecast with quantiles
 energy_plot <- ggplot() +
   geom_line(data = model_input, aes(x=floor_date, y=gesamt)) +
   scale_x_datetime() +
-  coord_cartesian(xlim = c(now() - weeks(6), now() + hours(100))) +
-  labs(x = NULL, y = "Gesamtverbrauch [GWh]")
+  coord_cartesian(xlim = c(as_datetime(forecast_date) - weeks(6), as_datetime(forecast_date) + hours(100)),
+                  expand=F) +
+  labs(x = NULL, y = "energy demand [GWh]")
 energy_plot <- energy_plot +
   geom_line(data=pred_sarima, aes(x=date_time, y=q0.5), color="red") +
   geom_ribbon(data = pred_sarima,
@@ -332,6 +380,8 @@ energy_plot <- energy_plot +
               aes(x=date_time, ymin=q0.025, ymax=q0.975), alpha=.15, fill="red")
 print(energy_plot)
 
+# determine datetimes for which forecasts are wanted
+horizons <- c(36, 40, 44, 60, 64, 68)
 forecast_datetimes <- as_date(forecast_date) + days(1) + hours(horizons - 1) # correct for UTC
 print(with_tz(forecast_datetimes, "CET"))
 
