@@ -245,6 +245,7 @@ for (forecast_date in forecast_dates){
   # compute forecast
   pred_energy_baseline <- energy_data %>%
     dplyr::select(floor_date, gesamt) %>%
+    dplyr::filter(floor_date <= as_datetime(forecast_date)) %>%
     mutate(weekday = weekdays(floor_date), hour = hour(floor_date)) %>%
     group_by(weekday, hour) %>%
     summarise(q0.025 = quantile(gesamt, 0.025),
@@ -284,4 +285,6 @@ for (forecast_date in forecast_dates){
   scores[scores$forecast_date==forecast_date, "baseline"] <- qs_sum_baseline/length(forecast_datetimes)
 }
 scores
+mean(scores$sarimax)
+mean(scores$baseline)
 
