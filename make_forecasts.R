@@ -342,7 +342,7 @@ data_fitted <- data.frame(datetime=model_input$floor_date, true=energy_model_sar
 plot_model_fit <- ggplot() +
   geom_line(data = data_fitted, aes(x=datetime, y=value, color=type)) +
   scale_color_brewer(palette = "Set1") +
-  coord_cartesian(xlim=c(as_datetime("2022-12-01"), as_datetime("2023-02-15")),
+  coord_cartesian(xlim=c(as_datetime("2022-12-01"), as_datetime(forecast_date)),
                   ylim=c(43,76), expand=F) +
   theme(legend.position="bottom") +
   xlab(element_blank()) + ylab("energy demand [GWh]")
@@ -464,6 +464,11 @@ for (tau in quantile_levels){
 }
 qs_sum_sarimax
 qs_sum_baseline
+
+energy_plot <- energy_plot +
+  geom_line(data=energy_data_future %>% dplyr::filter(hour(floor_date) %in% c(11,15,19)),
+            aes(x=floor_date, y=gesamt), color="orange")
+print(energy_plot)
 
 
 ###########
