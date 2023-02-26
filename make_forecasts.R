@@ -18,7 +18,7 @@ library(lmtest)
 
 getwd()
 
-options("scipen"=100, "digits"=4)
+options("scipen"=100, "digits"=4, dplyr.summarise.inform = FALSE)
 
 #forecast_date <- as.character(today())
 forecast_date <- "2023-02-15"
@@ -235,7 +235,7 @@ wednesdays <- gsub("-", "", seq(d, today(), by="week"))
 temperature <- data.frame(fcst_hour=0:120)
 for (w in wednesdays){
   try({file <- paste0("../kit-weather-ensemble-point-forecast-karlsruhe/icon-eu-eps_", w, "00_t_2m_Karlsruhe.txt")
-  temp_w <- read_delim(file, delim = "|", skip=3) %>%
+  temp_w <- read_delim(file, delim = "|", skip=3, col_types = cols()) %>%
     dplyr::select(!c(`...1`, `...43`)) %>%
     dplyr::rename_all(list(~gsub(" ", "", .))) %>%
     mutate_all(as.numeric) %>%
