@@ -256,7 +256,12 @@ temperature_long <- temperature %>%
   full_join(energy_data %>% dplyr::select(floor_date), by="floor_date") %>%
   arrange(floor_date) %>%
   dplyr::filter(!is.na(floor_date)) %>%
-  mutate(temp_mean = na.approx(temp_mean)) # linearly interpolate missing values
+  dplyr::filter(floor_date < as_date(forecast_date) + hours(120)) %>%
+  mutate(hour=hour(floor_date)) %>%
+  group_by(hour) %>%
+  mutate(temp_mean = na.approx(temp_mean, na.rm = F)) %>% # linearly interpolate missing values
+  ungroup() %>%
+  dplyr::select(!hour)
 View(temperature_long)
 
 # combine model input and filter for hours of interest
