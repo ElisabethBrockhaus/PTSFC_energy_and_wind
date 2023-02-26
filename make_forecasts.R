@@ -259,9 +259,10 @@ temperature_long <- temperature %>%
   dplyr::filter(floor_date < as_date(forecast_date) + hours(120)) %>%
   mutate(hour=hour(floor_date)) %>%
   group_by(hour) %>%
-  mutate(temp_mean = na.approx(temp_mean, na.rm = F)) %>% # linearly interpolate missing values
+  mutate(temp_mean = na.approx(temp_mean, na.rm = F)) %>% # linearly interpolate missing between previous and next available value from same hour
   ungroup() %>%
-  dplyr::select(!hour)
+  dplyr::select(!hour) %>%
+  mutate(temp_mean = na.approx(temp_mean, na.rm = F)) # linearly interpolate missing at the end of time series where no next value is available
 View(temperature_long)
 
 # combine model input and filter for hours of interest
