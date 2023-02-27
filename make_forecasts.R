@@ -475,6 +475,7 @@ print(energy_plot)
 # Weather #
 ###########
 
+# read historic data
 data_dir <- "data/weather/"
 wind_data_raw <- read_feather(paste0(data_dir, "icon_eps_wind_10m_KA.feather"))
 wind_data_raw <- wind_data_raw[!is.na(wind_data_raw$obs),]
@@ -483,8 +484,9 @@ wind_data_raw_recent <- read_delim(paste0(data_dir, "stundenwerte_FF_04177_akt/p
   dplyr::select(c("MESS_DATUM", "   F")) %>%
   rename(obs_tm = MESS_DATUM, obs = "   F") %>%
   mutate(obs_tm = as_datetime(as.character(obs_tm), format="%Y%m%d%H"),
-         obs = 3.6 * as.numeric(obs))
+         obs = 3.6 * as.numeric(obs)) # transform from m/s to km/h
 
+# plot historic wind speed for different time frames
 wind_raw_years_plot <- ggplot() +
   geom_line(data=wind_data_raw, aes(x=obs_tm, y=obs)) +
   geom_line(data=wind_data_raw_recent, aes(x=obs_tm, y=obs)) +
@@ -504,88 +506,27 @@ print(wind_raw_plot)
 ggsave(wind_raw_plot, filename = "otherFiles/plot_wind_raw.png",  bg = "transparent",
        width = 8.8, height = 4.5)
 
-
-### EMOS model ###
-
+# read forecast from PBNN model made in Python
 today <- gsub("-", "", forecast_date)
-
-new_fcst <- read.table(file = paste0("D:/EllasDaten/Uni/Wirtschaftsmathe/ProbabilisticTimeSeriesForecastingChallenge/kit-weather-ensemble-point-forecast-karlsruhe/",
-                                     "icon-eu-eps_", today, "00_wind_mean_10m_Karlsruhe.txt"),
-                       sep = "|",
-                       header = TRUE)
-
-new_fcst[,1] <- NULL
-new_fcst[,ncol(new_fcst)] <- NULL
-
-quantile_levels <- c(0.025,0.25,0.5,0.75,0.975)
-lt_list <- c(36 + (0:4)*12)
-
-fc_wind_ens <-
-  fc_wind_emos <- data.frame(forecast_date = as.Date(today, format = "%Y%M%d"),
-                             target = "wind",
-                             horizon = lt_list,
-                             q0.025 = NA, q0.25 = NA, q0.5 = NA, q0.75 = NA, q0.975 = NA)
-
-for(this_lt in lt_list){
-  wind_data <- subset(wind_data_raw, fcst_hour == this_lt)
-  wind_benchmark2 <- crch(obs ~ ens_mean|ens_sd,
-                          data = wind_data,
-                          dist = "gaussian",
-                          left = 0,
-                          truncated = TRUE,
-                          link.scale = "log",
-                          type = "crps")
-
-  ens_fc <- new_fcst[new_fcst$fcst_hour == this_lt,][2:ncol(new_fcst)]
-  ens_fc <- as.numeric(ens_fc)
-
-  fc_wind_ens[which(fc_wind_ens$horizon == this_lt),4:8] <- quantile(ens_fc, quantile_levels)
-
-  pred_df <- data.frame(ens_mean = mean(ens_fc), ens_sd = sd(ens_fc))
-
-  wind_benchmark2_loc <- predict(wind_benchmark2,
-                                 pred_df,
-                                 type = "location")
-  wind_benchmark2_sc <- predict(wind_benchmark2,
-                                pred_df,
-                                type = "scale")
-
-  fc_wind_emos[which(fc_wind_emos$horizon == this_lt),4:8] <- qtnorm(quantile_levels, wind_benchmark2_loc, wind_benchmark2_sc, left = 0)
-}
-
-for(i in 1:nrow(fc_wind_ens)){
-  fc_wind_ens$horizon[i] <- paste(fc_wind_ens$horizon[i], "hour")
-  fc_wind_emos$horizon[i] <- paste(fc_wind_emos$horizon[i], "hour")
-}
-
-fc_wind_emos <- fc_wind_emos %>%
-  mutate(forecast_date = as.character(forecast_date))
-
 fc_wind <- read_csv(paste0("otherFiles/", today, "_wind_pbnn.csv"))
 
+# plot recent history with forecast to check validity
 wind_plot <- ggplot() +
-  geom_line(data = wind_data, aes(x=obs_tm, y=obs)) +
+  geom_line(data = wind_data_raw_recent, aes(x=obs_tm, y=obs)) +
   geom_line(data = fc_wind,
-            aes(x=max(wind_data$obs_tm)+hours(substr(horizon,1,2)),
+            aes(x=max(wind_data_raw_recent$obs_tm)+hours(substr(horizon,1,2)),
                 y=q0.5)) +
   geom_ribbon(data = fc_wind,
-              aes(x=max(wind_data$obs_tm)+hours(substr(horizon,1,2)),
+              aes(x=max(wind_data_raw_recent$obs_tm)+hours(substr(horizon,1,2)),
                   ymin=q0.25, ymax=q0.75), alpha=.3) +
   geom_ribbon(data = fc_wind,
-              aes(x=max(wind_data$obs_tm)+hours(substr(horizon,1,2)),
-                  ymin=q0.025, ymax=q0.975), alpha=.15) +
-  geom_line(data = fc_wind_emos,
-            aes(x=max(wind_data$obs_tm)+hours(substr(horizon,1,2)),
-                y=q0.5)) +
-  geom_ribbon(data = fc_wind_emos,
-              aes(x=max(wind_data$obs_tm)+hours(substr(horizon,1,2)),
-                  ymin=q0.25, ymax=q0.75), alpha=.3) +
-  geom_ribbon(data = fc_wind_emos,
-              aes(x=max(wind_data$obs_tm)+hours(substr(horizon,1,2)),
+              aes(x=max(wind_data_raw_recent$obs_tm)+hours(substr(horizon,1,2)),
                   ymin=q0.025, ymax=q0.975), alpha=.15) +
   scale_x_datetime() +
-  coord_cartesian(xlim = c(as_datetime(today) - weeks(6), as_datetime(today) + hours(100))) +
-  labs(x = NULL, y = "windspeed")
+  coord_cartesian(xlim = c(as_datetime(today) - weeks(4), as_datetime(today) + hours(84)),
+                  ylim = c(0, 50),
+                  expand = F) +
+  labs(x = NULL, y = "wind speed [km/h]")
 print(wind_plot)
 
 fc_wind <- fc_wind %>%
